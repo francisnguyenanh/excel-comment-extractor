@@ -1,0 +1,8 @@
+{
+  "name": "Excel Comment Extractor & Drive Integrator",
+  "description": "An advanced tool to extract comments from Excel files (including those from Google Drive) and export them into a organized summary file. Supports Google Drive integration with OAuth configuration.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
