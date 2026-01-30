@@ -26,6 +26,33 @@ const App: React.FC = () => {
   // Translation State
   const [targetLang, setTargetLang] = useState<string>('');
   const [isTranslating, setIsTranslating] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragging(false);
+    
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      const file = e.dataTransfer.files[0];
+      if (file.name.endsWith('.xlsx')) {
+        setSelectedLocalFile(file);
+        setExtractedComments([]);
+        setDownloadUrl(null);
+      } else {
+        alert('Vui lòng chỉ upload file Excel (.xlsx)');
+      }
+    }
+  };
 
   const handleLocalFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -135,7 +162,12 @@ const App: React.FC = () => {
               </h2>
               
               <div className="space-y-4">
-                <div className="border-2 border-dashed border-gray-200 rounded-xl p-8 text-center hover:border-green-400 transition-colors bg-gray-50/50 group">
+                <div 
+                  className={`border-2 border-dashed rounded-xl p-8 text-center transition-all bg-gray-50/50 group ${isDragging ? 'border-green-500 bg-green-50 scale-105 shadow-md' : 'border-gray-200 hover:border-green-400'}`}
+                  onDragOver={handleDragOver}
+                  onDragLeave={handleDragLeave}
+                  onDrop={handleDrop}
+                >
                   <input 
                     type="file" 
                     id="file-upload" 
@@ -144,10 +176,12 @@ const App: React.FC = () => {
                     onChange={handleLocalFileSelect}
                   />
                   <label htmlFor="file-upload" className="cursor-pointer">
-                    <div className="bg-white shadow-sm w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-4 group-hover:scale-110 transition-transform">
-                      <Upload className="text-gray-400 group-hover:text-green-600" />
+                    <div className={`bg-white shadow-sm w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-4 transition-transform ${isDragging ? 'scale-125' : 'group-hover:scale-110'}`}>
+                      <Upload className={`transition-colors ${isDragging ? 'text-green-600' : 'text-gray-400 group-hover:text-green-600'}`} />
                     </div>
-                    <p className="text-sm font-medium text-gray-700">Click để chọn file</p>
+                    <p className="text-sm font-medium text-gray-700">
+                      {isDragging ? 'Thả file vào đây' : 'Kéo thả hoặc Click để chọn file'}
+                    </p>
                     <p className="text-xs text-gray-400 mt-1">Hỗ trợ file Excel (.xlsx)</p>
                   </label>
                 </div>
@@ -169,7 +203,7 @@ const App: React.FC = () => {
                       <option key={lang.code} value={lang.code}>{lang.name}</option>
                     ))}
                   </select>
-                  {targetLang && (
+                   {targetLang && (
                     <div className="mt-2 text-xs">
                       {apiKeyReady ? (
                          <p className="text-green-700 flex items-start">
@@ -177,10 +211,9 @@ const App: React.FC = () => {
                            Đang sử dụng Gemini AI (High Quality & Fast).
                          </p>
                       ) : (
-                         <p className="text-orange-700 flex items-start">
-                           <AlertCircle size={12} className="mr-1 mt-0.5 flex-shrink-0" />
-                           Đang dùng Free Google Translate (Chậm & Dễ lỗi). <br/>
-                           Vui lòng thêm KEY vào .env.local và restart server.
+                         <p className="text-gray-500 flex items-start">
+                           <Info size={12} className="mr-1 mt-0.5 flex-shrink-0" />
+                           Chưa có API Key. Chức năng dịch sẽ bị tạm tắt (chỉ hiện text gốc).
                          </p>
                       )}
                     </div>

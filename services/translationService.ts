@@ -14,28 +14,12 @@ export const hasApiKey = (): boolean => {
   return !!getApiKey();
 };
 
-const translateWithFreeGoogle = async (text: string, targetLang: string): Promise<string> => {
-   try {
-    const url = `${FREE_TRANSLATE_API}?client=gtx&sl=auto&tl=${targetLang}&dt=t&q=${encodeURIComponent(text)}`;
-    const response = await fetch(url);
-    if (response.ok) {
-      const data = await response.json();
-      if (Array.isArray(data) && Array.isArray(data[0])) {
-        return data[0].map((item: any) => item[0]).join('');
-      }
-    }
-  } catch (error) {
-    console.warn('Free Google Translate API failed:', error);
-  }
-  return text;
-};
-
 export const translateText = async (text: string, targetLang: string, sourceLang: string = 'auto'): Promise<string> => {
   if (!text || !text.trim()) return '';
 
   const apiKey = getApiKey();
 
-  // Ưu tiên dùng Gemini nếu có API Key
+  // Chỉ dịch nếu có API Key
   if (apiKey) {
     try {
       const prompt = `Translate the following text to language code "${targetLang}". Only return the translated text without quotes. Text: ${text}`;
@@ -65,14 +49,14 @@ export const translateText = async (text: string, targetLang: string, sourceLang
         return translatedText.trim();
       }
     } catch (error) {
-      console.warn('Gemini translation failed, falling back to free Google Translate...', error);
+      console.warn('Gemini translation failed', error);
     }
   } else {
-    console.log('No Gemini API Key found, using free Google Translate.');
+    console.log('No Gemini API Key found. Skipping translation.');
   }
   
-  // Fallback nếu không có key hoặc Gemini lỗi
-  return translateWithFreeGoogle(text, targetLang);
+  // Trả về text gốc nếu không có key hoặc lỗi
+  return text;
 };
 
 /**
@@ -138,6 +122,9 @@ export const translateBatch = async (texts: string[], targetLang: string): Promi
     } catch (e) {
       console.warn('Batch translation failed, falling back to sequential...');
     }
+  } else {
+    console.warn('No API Key found. Skipping batch translation.');
+    return texts; // Trả về text gốc nếu không có api key
   }
 
   // Fallback: Dịch từng cái (Free Google hoặc nếu Batch lỗi)
@@ -145,8 +132,8 @@ export const translateBatch = async (texts: string[], targetLang: string): Promi
   const results = [];
   for (const text of texts) {
      results.push(await translateText(text, targetLang));
-     // Delay để tránh rate limit của Free Google
-     await new Promise(r => setTimeout(r, 100)); 
+     // Delay nhẹ
+     await new Promise(r => setTimeout(r, 50)); 
   }
   return results;
 };

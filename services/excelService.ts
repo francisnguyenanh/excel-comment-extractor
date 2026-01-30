@@ -188,7 +188,14 @@ const extractThreadedComments = async (arrayBuffer: ArrayBuffer): Promise<{
       
       for (let i = 0; i < sheetElements.length; i++) {
         const el = sheetElements[i];
-        const name = el.getAttribute('name') || `Sheet${i + 1}`;
+        let name = el.getAttribute('name') || `Sheet${i + 1}`;
+        const state = el.getAttribute('state');
+        
+        // Nếu sheet bị ẩn, thêm suffix
+        if (state === 'hidden' || state === 'veryHidden') {
+          name = `${name} （非表示）`;
+        }
+        
         const rId = el.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id') || '';
         sheetNames.set(rId, name);
       }
@@ -359,7 +366,9 @@ export const extractCommentsFromFile = async (file: File): Promise<ExcelComment[
     
     // Xử lý từng sheet có threaded comments
     for (const [sheetName, comments] of threadedCommentsMap.entries()) {
-      const worksheet = workbook.getWorksheet(sheetName);
+      // Vì sheetName có thể đã thêm suffix （非表示） nên cần clean để lấy lại sheet gốc trong workbook
+      const cleanSheetName = sheetName.replace(' （非表示）', '');
+      const worksheet = workbook.getWorksheet(cleanSheetName);
       
       for (const comment of comments) {
         let originalContent = '[Ô trống]';
@@ -392,15 +401,19 @@ export const extractCommentsFromFile = async (file: File): Promise<ExcelComment[
   await workbook.xlsx.load(arrayBuffer);
   
   let cellsWithNotes = 0;
-  const existingAddresses = new Set(extractedComments.map(c => `${c.sheetName}|${c.cellAddress}`));
+  const existingAddresses = new Set(extractedComments.map(c => `${c.sheetName.replace(' （非表示）', '')}|${c.cellAddress}`));
 
   workbook.eachSheet((worksheet) => {
-    const sheetName = worksheet.name;
+    let sheetName = worksheet.name;
+    // Kiểm tra nếu sheet ẩn, thêm thông báo vào tên
+    if (worksheet.state === 'hidden' || worksheet.state === 'veryHidden') {
+      sheetName = `${sheetName} （非表示）`;
+    }
 
     worksheet.eachRow({ includeEmpty: true }, (row) => {
       row.eachCell({ includeEmpty: true }, (cell) => {
         // Kiểm tra xem ô này đã có trong danh sách threaded comments chưa
-        const key = `${sheetName}|${cell.address}`;
+        const key = `${worksheet.name}|${cell.address}`;
         if (existingAddresses.has(key)) return;
         
         if (cell.note) {
