@@ -6,6 +6,7 @@ export interface ExcelComment {
   commentContent: string;
   translatedContent?: string; // Thêm trường dịch
   author: string;
+  createdDate?: string;
   status: string;
 }
 

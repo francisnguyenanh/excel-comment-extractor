@@ -10,6 +10,10 @@ const getApiKey = () => {
   return import.meta.env.VITE_GEMINI_API_KEY;
 };
 
+export const hasApiKey = (): boolean => {
+  return !!getApiKey();
+};
+
 const translateWithFreeGoogle = async (text: string, targetLang: string): Promise<string> => {
    try {
     const url = `${FREE_TRANSLATE_API}?client=gtx&sl=auto&tl=${targetLang}&dt=t&q=${encodeURIComponent(text)}`;
@@ -101,6 +105,12 @@ export const translateBatch = async (texts: string[], targetLang: string): Promi
             })
           }
         );
+
+        if (!response.ok) {
+           const errText = await response.text();
+           console.error(`Gemini Batch API Error (${response.status}):`, errText);
+           throw new Error(`Gemini API Error: ${response.status}`);
+        }
 
         const data = await response.json();
         const content = data.candidates?.[0]?.content?.parts?.[0]?.text;

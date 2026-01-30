@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 import { ExcelComment } from './types';
 import { extractCommentsFromFile, generateResultExcel } from './services/excelService';
-import { translateBatch, SUPPORTED_LANGUAGES } from './services/translationService';
+import { translateBatch, SUPPORTED_LANGUAGES, hasApiKey } from './services/translationService';
 
 const App: React.FC = () => {
   // File Processing State
@@ -21,6 +21,7 @@ const App: React.FC = () => {
   const [extractedComments, setExtractedComments] = useState<ExcelComment[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
+  const [apiKeyReady, setApiKeyReady] = useState(hasApiKey());
   
   // Translation State
   const [targetLang, setTargetLang] = useState<string>('');
@@ -85,6 +86,15 @@ const App: React.FC = () => {
               <FileSpreadsheet className="text-white w-6 h-6" />
             </div>
             <h1 className="text-xl font-bold text-gray-800">Excel Comment Extractor</h1>
+            {apiKeyReady ? (
+               <span className="bg-green-100 text-green-800 text-xs px-2 py-0.5 rounded-full border border-green-200 flex items-center">
+                 <CheckCircle2 size={12} className="mr-1" /> AI Ready
+               </span>
+            ) : (
+               <span className="bg-orange-100 text-orange-800 text-xs px-2 py-0.5 rounded-full border border-orange-200 flex items-center" title="Chưa có API Key, sẽ dùng Google Translate miễn phí">
+                 <AlertCircle size={12} className="mr-1" /> No API Key
+               </span>
+            )}
           </div>
         </div>
       </header>
@@ -160,10 +170,20 @@ const App: React.FC = () => {
                     ))}
                   </select>
                   {targetLang && (
-                    <p className="text-xs text-blue-600 mt-2 flex items-start">
-                      <Info size={12} className="mr-1 mt-0.5 flex-shrink-0" />
-                      Sử dụng API miễn phí nên có thể chậm hoặc giới hạn số lượng.
-                    </p>
+                    <div className="mt-2 text-xs">
+                      {apiKeyReady ? (
+                         <p className="text-green-700 flex items-start">
+                           <CheckCircle2 size={12} className="mr-1 mt-0.5 flex-shrink-0" />
+                           Đang sử dụng Gemini AI (High Quality & Fast).
+                         </p>
+                      ) : (
+                         <p className="text-orange-700 flex items-start">
+                           <AlertCircle size={12} className="mr-1 mt-0.5 flex-shrink-0" />
+                           Đang dùng Free Google Translate (Chậm & Dễ lỗi). <br/>
+                           Vui lòng thêm KEY vào .env.local và restart server.
+                         </p>
+                      )}
+                    </div>
                   )}
                 </div>
 

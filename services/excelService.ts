@@ -318,6 +318,18 @@ const extractThreadedComments = async (arrayBuffer: ArrayBuffer): Promise<{
   }
 };
 
+const formatExcelDate = (isoString: string): string => {
+  if (!isoString) return '';
+  try {
+    const date = new Date(isoString);
+    if (isNaN(date.getTime())) return isoString;
+    // Format: YYYY-MM-DD HH:mm:ss
+    return date.toISOString().replace('T', ' ').substring(0, 19);
+  } catch {
+    return isoString;
+  }
+};
+
 export const extractCommentsFromFile = async (file: File): Promise<ExcelComment[]> => {
   const arrayBuffer = await file.arrayBuffer();
   
@@ -367,6 +379,7 @@ export const extractCommentsFromFile = async (file: File): Promise<ExcelComment[
           originalContent: originalContent.trim(),
           commentContent: cleanCommentContent(comment.text),
           author: comment.author,
+          createdDate: formatExcelDate(comment.timestamp),
           status: 'N/A'
         });
       }
@@ -402,6 +415,7 @@ export const extractCommentsFromFile = async (file: File): Promise<ExcelComment[
               originalContent: originalValue.trim() || '[Ô trống]',
               commentContent: cleanCommentContent(text),
               author: author,
+              createdDate: '',
               status: 'N/A'
             });
           }
@@ -427,9 +441,9 @@ export const generateResultExcel = async (comments: ExcelComment[]): Promise<Blo
   // Cấu hình cột
   const columns = [
     { header: 'Tên Sheet', key: 'sheetName', width: 20 },
-    { header: 'Địa chỉ ô', key: 'cellAddress', width: 15 },
-    { header: 'Nội dung gốc của ô', key: 'originalContent', width: 40 },
-    { header: 'Nội dung Comment', key: 'commentContent', width: 60 },
+    { header: 'Địa chỉ ô', key: 'cellAddress', width: 10 },
+    { header: 'Nội dung gốc của ô', key: 'originalContent', width: 30 },
+    { header: 'Nội dung Comment', key: 'commentContent', width: 50 },
   ];
 
   // Nếu có nội dung dịch -> thêm cột
