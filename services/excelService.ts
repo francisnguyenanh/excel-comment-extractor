@@ -234,13 +234,25 @@ const extractThreadedComments = async (arrayBuffer: ArrayBuffer): Promise<{
     // 5. Đọc từng sheet's relationships để biết threadedComment nào thuộc sheet nào
     const sheetToThreadedComment = new Map<string, string>(); // threadedComment file -> sheet name
     
-    for (let sheetIndex = 1; sheetIndex <= 20; sheetIndex++) {
-      const sheetRelsFile = zip.file(`xl/worksheets/_rels/sheet${sheetIndex}.xml.rels`);
+    // Liệt kê động tất cả các file rels của worksheet thay vì giới hạn cứng 20 sheets
+    const allSheetRelsFiles: string[] = [];
+    zip.forEach((relativePath) => {
+      if (/^xl\/worksheets\/_rels\/sheet\d+\.xml\.rels$/.test(relativePath)) {
+        allSheetRelsFiles.push(relativePath);
+      }
+    });
+
+    for (const relsPath of allSheetRelsFiles) {
+      const sheetRelsFile = zip.file(relsPath);
       if (sheetRelsFile) {
         const relsXml = await sheetRelsFile.async('string');
         const doc = parseXML(relsXml);
         const relElements = doc.getElementsByTagName('Relationship');
-        
+
+        // Lấy số thứ tự sheet từ đường dẫn rels (ví dụ: sheet3.xml.rels -> 3)
+        const sheetIndexMatch = relsPath.match(/sheet(\d+)\.xml\.rels$/);
+        const sheetIndex = sheetIndexMatch ? parseInt(sheetIndexMatch[1]) : 0;
+
         for (let i = 0; i < relElements.length; i++) {
           const el = relElements[i];
           const target = el.getAttribute('Target') || '';
@@ -314,7 +326,9 @@ const extractThreadedComments = async (arrayBuffer: ArrayBuffer): Promise<{
       }
       
       if (sheetComments.length > 0) {
-        result.set(sheetName, sheetComments);
+        // Dùng concat thay vì set() để tránh ghi đè khi nhiều file tcf cùng sheet
+        const existing = result.get(sheetName) || [];
+        result.set(sheetName, [...existing, ...sheetComments]);
       }
     }
     
