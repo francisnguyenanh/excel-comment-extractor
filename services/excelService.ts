@@ -458,6 +458,42 @@ export const extractCommentsFromFile = async (file: File): Promise<ExcelComment[
     console.warn(`[ExcelService] Không tìm thấy comment/note nào trong file.`);
   }
 
+  // ========== BƯỚC 3: Sắp xếp theo thứ tự hiển thị sheet trong workbook, sau đó theo dòng/cột ==========
+  // Xây dựng map: tên sheet (clean) -> index hiển thị trong workbook
+  const sheetOrderMap = new Map<string, number>();
+  workbook.eachSheet((ws, _sheetId) => {
+    const cleanName = ws.name;
+    if (!sheetOrderMap.has(cleanName)) {
+      sheetOrderMap.set(cleanName, sheetOrderMap.size);
+    }
+  });
+
+  // Helper: chuyển địa chỉ ô "B3" -> { row: 3, col: 2 } để so sánh
+  const parseCellAddress = (address: string): { row: number; col: number } => {
+    const match = address.match(/^([A-Z]+)(\d+)$/i);
+    if (!match) return { row: 0, col: 0 };
+    const colStr = match[1].toUpperCase();
+    const row = parseInt(match[2], 10);
+    let col = 0;
+    for (let i = 0; i < colStr.length; i++) {
+      col = col * 26 + (colStr.charCodeAt(i) - 64);
+    }
+    return { row, col };
+  };
+
+  extractedComments.sort((a, b) => {
+    const cleanA = a.sheetName.replace(' （非表示）', '');
+    const cleanB = b.sheetName.replace(' （非表示）', '');
+    const orderA = sheetOrderMap.get(cleanA) ?? 9999;
+    const orderB = sheetOrderMap.get(cleanB) ?? 9999;
+    if (orderA !== orderB) return orderA - orderB;
+
+    const posA = parseCellAddress(a.cellAddress);
+    const posB = parseCellAddress(b.cellAddress);
+    if (posA.row !== posB.row) return posA.row - posB.row;
+    return posA.col - posB.col;
+  });
+
   return extractedComments;
 };
 
