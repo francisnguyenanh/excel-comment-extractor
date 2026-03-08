@@ -40,13 +40,13 @@
         </div>
 
         {% if error %}
-        <div class="alert alert-danger d-flex align-items-center py-2 mb-3">
-          <i class="bi bi-exclamation-triangle-fill me-2 flex-shrink-0"></i>
+        <div class="alert {{ 'alert-warning' if blocked else 'alert-danger' }} d-flex align-items-center py-2 mb-3">
+          <i class="bi {{ 'bi-shield-lock-fill' if blocked else 'bi-exclamation-triangle-fill' }} me-2 flex-shrink-0"></i>
           <span>{{ error }}</span>
         </div>
         {% endif %}
 
-        <form method="POST" action="/login">
+        <form method="POST" action="/login" {% if blocked %}inert{% endif %}>
           <div class="mb-4">
             <label for="password" class="form-label fw-semibold">Mật khẩu</label>
             <div class="input-group">
@@ -54,11 +54,18 @@
               <input type="password" id="password" name="password"
                      class="form-control form-control-lg"
                      placeholder="Nhập mật khẩu..."
-                     autofocus required>
+                     {% if not blocked %}autofocus{% endif %}
+                     {% if not blocked %}required{% endif %}
+                     {% if blocked %}disabled{% endif %}>
             </div>
           </div>
-          <button type="submit" class="btn btn-primary w-100 btn-lg fw-semibold">
-            <i class="bi bi-box-arrow-in-right me-1"></i>Đăng nhập
+          <button type="submit" class="btn btn-primary w-100 btn-lg fw-semibold"
+                  {% if blocked %}disabled{% endif %}>
+            {% if blocked %}
+              <i class="bi bi-shield-slash me-1"></i>Thiết bị bị khoá
+            {% else %}
+              <i class="bi bi-box-arrow-in-right me-1"></i>Đăng nhập
+            {% endif %}
           </button>
         </form>
       </div>

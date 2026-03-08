@@ -22,7 +22,14 @@ os.makedirs(UPLOAD_BASE, exist_ok=True)
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'config.json')
 FOLDER_TTL  = 86400  # seconds — folders older than 24 h will be deleted
 
+SESSION_LIFETIME    = 1800   # seconds — auto logout after 30 min of inactivity
+LOGIN_MAX_ATTEMPTS  = 5      # max failed attempts before blocking an IP
+LOGIN_BLOCK_TTL     = 86400  # seconds — IP is blocked for 24 h
+
 ALLOWED_EXTENSIONS = {'xlsx'}
+
+# In-memory store for brute-force tracking: {ip: {'count': int, 'blocked_until': float}}
+_login_attempts: dict = {}
 
 
 def allowed_file(filename: str) -> bool:
@@ -45,6 +52,41 @@ def _load_config() -> dict:
 def _check_password(plain: str) -> bool:
     config = _load_config()
     return plain == config.get('password', '')
+
+
+# ---------------------------------------------------------------------------
+# Brute-force protection helpers
+# ---------------------------------------------------------------------------
+def _get_client_ip() -> str:
+    """Return the real client IP, respecting X-Forwarded-For if present."""
+    return request.headers.get('X-Forwarded-For', request.remote_addr or '0.0.0.0').split(',')[0].strip()
+
+
+def _is_ip_blocked(ip: str) -> tuple[bool, float]:
+    """Return (blocked, seconds_remaining). Also clears expired entries."""
+    entry = _login_attempts.get(ip)
+    if not entry:
+        return False, 0.0
+    blocked_until = entry.get('blocked_until', 0)
+    if blocked_until > time.time():
+        return True, blocked_until - time.time()
+    # Block expired — clean up
+    _login_attempts.pop(ip, None)
+    return False, 0.0
+
+
+def _record_login_failure(ip: str) -> int:
+    """Increment failure counter for IP. Block IP if limit reached. Returns current count."""
+    entry = _login_attempts.setdefault(ip, {'count': 0, 'blocked_until': 0})
+    entry['count'] += 1
+    if entry['count'] >= LOGIN_MAX_ATTEMPTS:
+        entry['blocked_until'] = time.time() + LOGIN_BLOCK_TTL
+    return entry['count']
+
+
+def _clear_login_attempts(ip: str) -> None:
+    """Remove all failure records for IP after a successful login."""
+    _login_attempts.pop(ip, None)
 
 
 def _user_folder() -> str:
@@ -71,6 +113,26 @@ def login_required(f):
             return redirect(url_for('login_page'))
         return f(*args, **kwargs)
     return _wrapped
+
+
+# ---------------------------------------------------------------------------
+# Idle session timeout
+# ---------------------------------------------------------------------------
+@app.before_request
+def _check_session_idle():
+    """Auto-logout when the session has been idle longer than SESSION_LIFETIME."""
+    if request.endpoint in ('login_page', 'logout', 'static'):
+        return
+    if session.get('logged_in'):
+        last = session.get('last_activity', 0)
+        if time.time() - last > SESSION_LIFETIME:
+            try:
+                shutil.rmtree(_user_folder(), ignore_errors=True)
+            except Exception:
+                pass
+            session.clear()
+            return redirect(url_for('login_page'))
+        session['last_activity'] = time.time()
 
 
 # ---------------------------------------------------------------------------
@@ -470,15 +532,37 @@ def _cleanup_user_folder(keep_token: str | None = None):
 def login_page():
     if session.get('logged_in'):
         return redirect(url_for('index'))
+
+    ip = _get_client_ip()
+    blocked, remaining_secs = _is_ip_blocked(ip)
     error = None
+
+    if blocked:
+        hours   = int(remaining_secs) // 3600
+        minutes = (int(remaining_secs) % 3600) // 60
+        error   = (f'Thiết bị của bạn đã bị khoá do nhập sai mật khẩu quá {LOGIN_MAX_ATTEMPTS} lần. '
+                   f'Vui lòng thử lại sau {hours} giờ {minutes} phút.')
+        return render_template('login.html', error=error, blocked=True)
+
     if request.method == 'POST':
         if _check_password(request.form.get('password', '')):
+            _clear_login_attempts(ip)
             session.clear()
             session['logged_in']      = True
             session['user_folder_id'] = str(uuid.uuid4())
+            session['last_activity']  = time.time()
             return redirect(url_for('index'))
-        error = 'Mật khẩu không đúng.'
-    return render_template('login.html', error=error)
+        # Wrong password
+        count = _record_login_failure(ip)
+        blocked_now, _ = _is_ip_blocked(ip)
+        if blocked_now:
+            error = (f'Bạn đã nhập sai {LOGIN_MAX_ATTEMPTS} lần. '
+                     f'Thiết bị này bị khoá trong 24 giờ.')
+        else:
+            remaining = LOGIN_MAX_ATTEMPTS - count
+            error = f'Mật khẩu không đúng. Còn {remaining} lần thử trước khi bị khoá.'
+
+    return render_template('login.html', error=error, blocked=blocked)
 
 
 @app.route('/logout')
