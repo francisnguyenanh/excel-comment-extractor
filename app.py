@@ -1,14 +1,17 @@
+import json
 import os
 import re
 import uuid
 import zipfile
 import xml.etree.ElementTree as ET
 
-from flask import Flask, after_this_request, render_template, request, send_file, abort
+from flask import (Flask, after_this_request, render_template,
+                   request, send_file, abort, session, redirect, url_for)
 from openpyxl import load_workbook, Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
 app = Flask(__name__)
+app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
 
 UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), 'uploads')
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -374,36 +377,94 @@ def build_excel(comments: list, output_path: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Cleanup helper
+# ---------------------------------------------------------------------------
+def cleanup_uploads():
+    """Delete all files in uploads folder."""
+    _cleanup_old_files(keep_token=None)
+
+
+def _cleanup_old_files(keep_token: str | None = None):
+    """
+    Delete all temp files in uploads/, except comments_{keep_token}.xlsx
+    (which the user may still need to download).
+    """
+    if not os.path.exists(UPLOAD_FOLDER):
+        return
+    keep_filename = f'comments_{keep_token}.xlsx' if keep_token else None
+    try:
+        for filename in os.listdir(UPLOAD_FOLDER):
+            if filename == keep_filename:
+                continue
+            filepath = os.path.join(UPLOAD_FOLDER, filename)
+            if os.path.isfile(filepath):
+                os.remove(filepath)
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Flask routes
 # ---------------------------------------------------------------------------
 @app.route('/')
 def index():
+    result_token = session.pop('result_token', None)
+    comments, error, download_token = [], None, None
+
+    if result_token:
+        # Read this request's result JSON first
+        result_path = os.path.join(UPLOAD_FOLDER, f'result_{result_token}.json')
+        if os.path.exists(result_path):
+            with open(result_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            comments       = data.get('comments', [])
+            error          = data.get('error')
+            download_token = data.get('download_token')
+            os.remove(result_path)  # Delete JSON immediately after reading
+
+        # Clean up old files, keeping the current export xlsx for download
+        _cleanup_old_files(keep_token=download_token)
+
+        return render_template('index.html', comments=comments,
+                               error=error, download_token=download_token)
+
+    # No result token → fresh home page, clean everything
+    cleanup_uploads()
     return render_template('index.html')
 
 
 @app.route('/upload', methods=['POST'])
 def upload():
-    error = None
-    comments = []
-    download_token = None
+    def _redirect_with(error=None, comments=None, download_token=None):
+        token = str(uuid.uuid4())
+        result_path = os.path.join(UPLOAD_FOLDER, f'result_{token}.json')
+        with open(result_path, 'w', encoding='utf-8') as f:
+            json.dump({
+                'comments':       comments or [],
+                'error':          error,
+                'download_token': download_token,
+            }, f, ensure_ascii=False)
+        session['result_token'] = token
+        return redirect(url_for('index'))
 
     if 'file' not in request.files:
-        error = 'Không tìm thấy file trong request.'
-        return render_template('index.html', error=error)
+        return _redirect_with(error='Không tìm thấy file trong request.')
 
     file = request.files['file']
 
     if file.filename == '':
-        error = 'Chưa chọn file.'
-        return render_template('index.html', error=error)
+        return _redirect_with(error='Chưa chọn file.')
 
     if not allowed_file(file.filename):
-        error = 'Chỉ chấp nhận file .xlsx.'
-        return render_template('index.html', error=error)
+        return _redirect_with(error='Chỉ chấp nhận file .xlsx.')
 
     token = str(uuid.uuid4())
     upload_path = os.path.join(UPLOAD_FOLDER, f'upload_{token}.xlsx')
     export_path = os.path.join(UPLOAD_FOLDER, f'comments_{token}.xlsx')
+
+    error = None
+    comments = []
+    download_token = None
 
     try:
         file.save(upload_path)
@@ -414,16 +475,10 @@ def upload():
     except Exception as exc:
         error = f'Lỗi khi xử lý file: {exc}'
     finally:
-        # Always delete the uploaded source file immediately
         if os.path.exists(upload_path):
             os.remove(upload_path)
 
-    return render_template(
-        'index.html',
-        comments=comments,
-        error=error,
-        download_token=download_token,
-    )
+    return _redirect_with(error=error, comments=comments, download_token=download_token)
 
 
 @app.route('/download/<token>')
