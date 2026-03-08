@@ -1,9 +1,12 @@
 import json
 import os
 import re
+import shutil
+import time
 import uuid
 import zipfile
 import xml.etree.ElementTree as ET
+from functools import wraps
 
 from flask import (Flask, after_this_request, render_template,
                    request, send_file, abort, session, redirect, url_for)
@@ -13,14 +16,61 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
 
-UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), 'uploads')
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+UPLOAD_BASE = os.path.join(os.path.dirname(__file__), 'uploads')
+os.makedirs(UPLOAD_BASE, exist_ok=True)
+
+CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'config.json')
+FOLDER_TTL  = 86400  # seconds — folders older than 24 h will be deleted
 
 ALLOWED_EXTENSIONS = {'xlsx'}
 
 
 def allowed_file(filename: str) -> bool:
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+# ---------------------------------------------------------------------------
+# Config / auth helpers
+# ---------------------------------------------------------------------------
+def _load_config() -> dict:
+    """Read config.json. Auto-create with default password 'admin123' if missing."""
+    if not os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump({'password': 'admin123'}, f, indent=2)
+        return {'password': 'admin123'}
+    with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
+def _check_password(plain: str) -> bool:
+    config = _load_config()
+    return plain == config.get('password', '')
+
+
+def _user_folder() -> str:
+    """
+    Return the upload folder path for the current session (named by user_folder_id).
+    Creates the folder if it doesn't exist yet.
+    """
+    fid = session.get('user_folder_id')
+    if not fid:
+        fid = str(uuid.uuid4())
+        session['user_folder_id'] = fid
+    path = os.path.join(UPLOAD_BASE, fid)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+# ---------------------------------------------------------------------------
+# Login required decorator
+# ---------------------------------------------------------------------------
+def login_required(f):
+    @wraps(f)
+    def _wrapped(*args, **kwargs):
+        if not session.get('logged_in'):
+            return redirect(url_for('login_page'))
+        return f(*args, **kwargs)
+    return _wrapped
 
 
 # ---------------------------------------------------------------------------
@@ -377,28 +427,38 @@ def build_excel(comments: list, output_path: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Cleanup helper
+# Cleanup helpers
 # ---------------------------------------------------------------------------
-def cleanup_uploads():
-    """Delete all files in uploads folder."""
-    _cleanup_old_files(keep_token=None)
-
-
-def _cleanup_old_files(keep_token: str | None = None):
+def _cleanup_expired_folders():
     """
-    Delete all temp files in uploads/, except comments_{keep_token}.xlsx
-    (which the user may still need to download).
+    Scan UPLOAD_BASE and delete sub-folders whose mtime is older than FOLDER_TTL.
+    Called once per GET / request to garbage-collect abandoned sessions.
     """
-    if not os.path.exists(UPLOAD_FOLDER):
+    if not os.path.exists(UPLOAD_BASE):
         return
-    keep_filename = f'comments_{keep_token}.xlsx' if keep_token else None
+    cutoff = time.time() - FOLDER_TTL
     try:
-        for filename in os.listdir(UPLOAD_FOLDER):
-            if filename == keep_filename:
+        for entry in os.scandir(UPLOAD_BASE):
+            if entry.is_dir() and entry.stat().st_mtime < cutoff:
+                shutil.rmtree(entry.path, ignore_errors=True)
+    except Exception:
+        pass
+
+
+def _cleanup_user_folder(keep_token: str | None = None):
+    """
+    Delete all files in the current user's upload folder,
+    except comments_{keep_token}.xlsx (still needed for download).
+    """
+    folder = _user_folder()
+    keep   = f'comments_{keep_token}.xlsx' if keep_token else None
+    try:
+        for name in os.listdir(folder):
+            if name == keep:
                 continue
-            filepath = os.path.join(UPLOAD_FOLDER, filename)
-            if os.path.isfile(filepath):
-                os.remove(filepath)
+            fp = os.path.join(folder, name)
+            if os.path.isfile(fp):
+                os.remove(fp)
     except Exception:
         pass
 
@@ -406,38 +466,67 @@ def _cleanup_old_files(keep_token: str | None = None):
 # ---------------------------------------------------------------------------
 # Flask routes
 # ---------------------------------------------------------------------------
+@app.route('/login', methods=['GET', 'POST'])
+def login_page():
+    if session.get('logged_in'):
+        return redirect(url_for('index'))
+    error = None
+    if request.method == 'POST':
+        if _check_password(request.form.get('password', '')):
+            session.clear()
+            session['logged_in']      = True
+            session['user_folder_id'] = str(uuid.uuid4())
+            return redirect(url_for('index'))
+        error = 'Mật khẩu không đúng.'
+    return render_template('login.html', error=error)
+
+
+@app.route('/logout')
+def logout():
+    try:
+        shutil.rmtree(_user_folder(), ignore_errors=True)
+    except Exception:
+        pass
+    session.clear()
+    return redirect(url_for('login_page'))
+
+
 @app.route('/')
+@login_required
 def index():
+    _cleanup_expired_folders()
+
     result_token = session.pop('result_token', None)
     comments, error, download_token = [], None, None
 
     if result_token:
-        # Read this request's result JSON first
-        result_path = os.path.join(UPLOAD_FOLDER, f'result_{result_token}.json')
+        folder      = _user_folder()
+        result_path = os.path.join(folder, f'result_{result_token}.json')
         if os.path.exists(result_path):
             with open(result_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             comments       = data.get('comments', [])
             error          = data.get('error')
             download_token = data.get('download_token')
-            os.remove(result_path)  # Delete JSON immediately after reading
+            os.remove(result_path)
 
-        # Clean up old files, keeping the current export xlsx for download
-        _cleanup_old_files(keep_token=download_token)
+        _cleanup_user_folder(keep_token=download_token)
 
         return render_template('index.html', comments=comments,
                                error=error, download_token=download_token)
 
-    # No result token → fresh home page, clean everything
-    cleanup_uploads()
+    _cleanup_user_folder(keep_token=None)
     return render_template('index.html')
 
 
 @app.route('/upload', methods=['POST'])
+@login_required
 def upload():
+    folder = _user_folder()
+
     def _redirect_with(error=None, comments=None, download_token=None):
-        token = str(uuid.uuid4())
-        result_path = os.path.join(UPLOAD_FOLDER, f'result_{token}.json')
+        token       = str(uuid.uuid4())
+        result_path = os.path.join(folder, f'result_{token}.json')
         with open(result_path, 'w', encoding='utf-8') as f:
             json.dump({
                 'comments':       comments or [],
@@ -458,9 +547,9 @@ def upload():
     if not allowed_file(file.filename):
         return _redirect_with(error='Chỉ chấp nhận file .xlsx.')
 
-    token = str(uuid.uuid4())
-    upload_path = os.path.join(UPLOAD_FOLDER, f'upload_{token}.xlsx')
-    export_path = os.path.join(UPLOAD_FOLDER, f'comments_{token}.xlsx')
+    token       = str(uuid.uuid4())
+    upload_path = os.path.join(folder, f'upload_{token}.xlsx')
+    export_path = os.path.join(folder, f'comments_{token}.xlsx')
 
     error = None
     comments = []
@@ -482,15 +571,15 @@ def upload():
 
 
 @app.route('/download/<token>')
+@login_required
 def download(token):
-    # Validate UUID format to prevent path traversal
     if not re.match(
         r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
         token,
     ):
         abort(400)
 
-    filepath = os.path.join(UPLOAD_FOLDER, f'comments_{token}.xlsx')
+    filepath = os.path.join(_user_folder(), f'comments_{token}.xlsx')
     if not os.path.exists(filepath):
         abort(404)
 
