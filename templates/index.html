@@ -188,6 +188,7 @@
           <thead class="table-primary">
             <tr>
               <th style="width:46px">#</th>
+              <th style="width:56px" class="text-center">Loại</th>
               <th>Sheet</th>
               <th>Ô</th>
               <th>Nội dung ô</th>
@@ -204,6 +205,13 @@
             <tr class="summary-row" onclick="toggleDetail('{{ row_id }}', this)">
               <td class="text-center">
                 <i class="bi bi-chevron-right toggle-icon me-1"></i>{{ loop.index }}
+              </td>
+              <td class="text-center">
+                {% if c.note_type == 'threaded' %}
+                  <span class="badge bg-info text-dark" title="Threaded Comment">💬</span>
+                {% else %}
+                  <span class="badge bg-warning text-dark" title="Note / Google Sheets Comment">📝</span>
+                {% endif %}
               </td>
               <td class="fw-semibold">{{ c.sheet_name }}</td>
               <td class="text-center fw-bold">{{ c.cell_ref }}</td>
@@ -223,7 +231,7 @@
             </tr>
 
             <tr id="{{ row_id }}" class="detail-row">
-              <td colspan="8" class="detail-cell">
+              <td colspan="9" class="detail-cell">
                 <div class="p-3 d-flex flex-column gap-3">
                   {% for reply in c.replies %}
                   <div class="card reply-card border">

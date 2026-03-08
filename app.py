@@ -62,30 +62,88 @@ def get_sheet_name_map(z: zipfile.ZipFile) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Step 2 – Find threadedComment XML for a given sheet
+# Step 2 – Find comment XML files for a given sheet (threaded + legacy)
 # ---------------------------------------------------------------------------
-def get_threaded_comment_file(z: zipfile.ZipFile, sheet_path: str):
+def get_comment_files(z: zipfile.ZipFile, sheet_path: str) -> dict:
     """
-    sheet_path: 'xl/worksheets/sheet3.xml'
-    Returns the path inside the zip to the threadedComment XML, or None.
+    Returns paths to both comment XML files for the given sheet:
+        {
+            'threaded': 'xl/threadedComments/threadedComment1.xml' or None,
+            'legacy':   'xl/comments1.xml' or None,
+        }
+    'threaded'  → Excel native threaded comments (has done attribute)
+    'legacy'    → classic comments / Google Sheets export (full text in <t>)
     """
-    sheet_filename = sheet_path.split('/')[-1]          # 'sheet3.xml'
+    sheet_filename = sheet_path.split('/')[-1]
     rels_path = f'xl/worksheets/_rels/{sheet_filename}.rels'
 
+    result = {'threaded': None, 'legacy': None}
+
     if rels_path not in z.namelist():
-        return None
+        return result
 
     with z.open(rels_path) as f:
         tree = ET.parse(f)
 
     for rel in tree.findall(f'.//{{{NS_REL}}}Relationship'):
         rel_type = rel.get('Type', '')
+        target   = 'xl/' + rel.get('Target', '').replace('../', '')
         if 'threadedComment' in rel_type:
-            target = rel.get('Target', '')
-            # target is usually "../threadedComments/threadedComment3.xml"
-            return 'xl/' + target.replace('../', '')
+            result['threaded'] = target
+        elif rel_type.endswith('/relationships/comments'):
+            result['legacy'] = target
 
-    return None
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Helper functions
+# ---------------------------------------------------------------------------
+def _extract_legacy_text(text_el) -> str:
+    """
+    Extract plain text from a legacy <text> element.
+    Google Sheets export:  <text><t xml:space="preserve">...</t></text>
+    Classic rich-text:     <text><r><rPr/><t>...</t></r></text>
+    """
+    if text_el is None:
+        return ''
+    # Direct <t> (Google Sheets / simple format)
+    t_el = text_el.find(f'{{{NS_WB}}}t')
+    if t_el is not None and t_el.text:
+        return t_el.text
+    # Rich-text <r><t> runs
+    parts = []
+    for r_el in text_el.findall(f'{{{NS_WB}}}r'):
+        t_el2 = r_el.find(f'{{{NS_WB}}}t')
+        if t_el2 is not None and t_el2.text:
+            parts.append(t_el2.text)
+    return ''.join(parts)
+
+
+def _get_cell_value(ws, cell_ref: str):
+    """Safe cell value lookup via openpyxl worksheet."""
+    if ws is None or not cell_ref:
+        return None
+    try:
+        val = ws[cell_ref].value
+        return str(val) if val is not None else None
+    except Exception:
+        return None
+
+
+def _build_comment_dict(sheet_name, sheet_index, cell_ref, cell_value,
+                        raw_text, replies, is_resolved, note_type) -> dict:
+    return {
+        'sheet_name':     sheet_name,
+        'cell_ref':       cell_ref,
+        'cell_value':     cell_value,
+        'comment_text':   raw_text,
+        'replies':        replies,
+        'first_datetime': replies[0]['datetime'] if replies else '',
+        'is_resolved':    is_resolved,
+        'sheet_index':    sheet_index,
+        'note_type':      note_type,   # 'threaded' | 'note'
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -155,74 +213,92 @@ def parse_replies(raw_text: str) -> list:
 # ---------------------------------------------------------------------------
 def extract_comments(filepath: str) -> list:
     """
-    Open an .xlsx file and return all threaded comments as a list of dicts.
-    Each dict shape:
-        sheet_name, cell_ref, cell_value, comment_text,
-        replies, first_datetime, is_resolved, sheet_index
+    Open an .xlsx file and return all comments (threaded + legacy/Google Sheets)
+    as a list of dicts including a 'note_type' field ('threaded' | 'note').
     """
-    # Load workbook once with openpyxl for cell values
     wb = load_workbook(filepath, data_only=True)
-
     results = []
 
     with zipfile.ZipFile(filepath, 'r') as z:
-        # Build sheet-path → (name, index) map
         sheet_map = get_sheet_name_map(z)
 
         for sheet_path, (sheet_name, sheet_index) in sheet_map.items():
-            tc_path = get_threaded_comment_file(z, sheet_path)
-            if tc_path is None or tc_path not in z.namelist():
-                continue
-
-            # Get the openpyxl worksheet for cell-value lookup
+            comment_files = get_comment_files(z, sheet_path)
             ws = wb[sheet_name] if sheet_name in wb.sheetnames else None
 
-            with z.open(tc_path) as f:
-                tc_tree = ET.parse(f)
+            # ── 1. Threaded Comments (Excel native) ──────────────────────
+            tc_path = comment_files['threaded']
+            has_threaded = False
+            if tc_path and tc_path in z.namelist():
+                with z.open(tc_path) as f:
+                    tc_tree = ET.parse(f)
 
-            # Try both namespace variants
-            tc_elements = tc_tree.findall(f'.//{{{NS_TC}}}threadedComment')
-            if not tc_elements:
-                # Fallback: no-namespace or different namespace
-                tc_elements = tc_tree.findall('.//threadedComment')
+                tc_elements = tc_tree.findall(f'.//{{{NS_TC}}}threadedComment')
+                if not tc_elements:
+                    tc_elements = tc_tree.findall('.//threadedComment')
 
-            for tc_el in tc_elements:
-                cell_ref = tc_el.get('ref', '')
-                done_attr = tc_el.get('done', '0')
-                is_resolved = (done_attr == '1')
+                for tc_el in tc_elements:
+                    cell_ref    = tc_el.get('ref', '')
+                    is_resolved = tc_el.get('done', '0') == '1'
 
-                # Raw comment text — use explicit None check, not 'or' (Element can be falsy)
-                text_el = tc_el.find(f'{{{NS_TC}}}text')
-                if text_el is None:
-                    text_el = tc_el.find('text')
-                raw_text = (text_el.text or '') if text_el is not None else ''
+                    text_el = tc_el.find(f'{{{NS_TC}}}text')
+                    if text_el is None:
+                        text_el = tc_el.find('text')
+                    raw_text = (text_el.text or '') if text_el is not None else ''
 
-                replies = parse_replies(raw_text)
+                    replies = parse_replies(raw_text)
+                    if not replies:
+                        continue
 
-                # Cell value via openpyxl
-                cell_value = None
-                if ws is not None and cell_ref:
-                    try:
-                        cell_value = ws[cell_ref].value
-                    except Exception:
-                        cell_value = None
-                if cell_value is not None:
-                    cell_value = str(cell_value)
+                    results.append(_build_comment_dict(
+                        sheet_name, sheet_index, cell_ref,
+                        _get_cell_value(ws, cell_ref),
+                        raw_text, replies, is_resolved, 'threaded',
+                    ))
+                    has_threaded = True
 
-                first_datetime = replies[0]['datetime'] if replies else ''
+            # ── 2. Legacy / Google Sheets Comments ───────────────────────
+            legacy_path = comment_files['legacy']
+            if legacy_path and legacy_path in z.namelist():
+                with z.open(legacy_path) as f:
+                    legacy_tree = ET.parse(f)
 
-                results.append({
-                    'sheet_name': sheet_name,
-                    'cell_ref': cell_ref,
-                    'cell_value': cell_value,
-                    'comment_text': raw_text,
-                    'replies': replies,
-                    'first_datetime': first_datetime,
-                    'is_resolved': is_resolved,
-                    'sheet_index': sheet_index,
-                })
+                authors_el  = legacy_tree.find(f'.//{{{NS_WB}}}authors')
+                author_list = []
+                if authors_el is not None:
+                    for a_el in authors_el.findall(f'{{{NS_WB}}}author'):
+                        author_list.append(a_el.text or '')
 
-    # Sort: sheet order first, then chronological
+                comment_list_el = legacy_tree.find(f'.//{{{NS_WB}}}commentList')
+                if comment_list_el is None:
+                    continue
+
+                for comment_el in comment_list_el.findall(f'{{{NS_WB}}}comment'):
+                    cell_ref    = comment_el.get('ref', '')
+                    author_id   = int(comment_el.get('authorId', '0'))
+                    author_name = author_list[author_id] if author_id < len(author_list) else ''
+
+                    # Skip threaded comment wrapper entries (Excel native files)
+                    if author_name.startswith('tc='):
+                        continue
+
+                    text_el  = comment_el.find(f'{{{NS_WB}}}text')
+                    raw_text = _extract_legacy_text(text_el)
+
+                    # Skip wrappers that point to threaded comments
+                    if '[Threaded comment]' in raw_text or not raw_text.strip():
+                        continue
+
+                    replies = parse_replies(raw_text)
+                    if not replies:
+                        continue
+
+                    results.append(_build_comment_dict(
+                        sheet_name, sheet_index, cell_ref,
+                        _get_cell_value(ws, cell_ref),
+                        raw_text, replies, False, 'note',
+                    ))
+
     results.sort(key=lambda x: (x['sheet_index'], x['first_datetime'] or ''))
     return results
 
